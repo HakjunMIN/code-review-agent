@@ -41,24 +41,17 @@ AI-powered Code Review Agent for GitHub Pull Requests using Azure OpenAI.
 1. **Clone the repository**
 
 ```bash
-git clone https://github.com/your-org/code-review-agent.git
+git clone https://github.com/HakjunMIN/code-review-agent.git
 cd code-review-agent
 ```
 
-2. **Create virtual environment**
+2. **Install dependencies with uv**
 
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+uv sync
 ```
 
-3. **Install dependencies**
-
-```bash
-pip install -r requirements.txt
-```
-
-4. **Configure environment variables**
+3. **Configure environment variables**
 
 ```bash
 cp .env.example .env
@@ -78,13 +71,13 @@ AZURE_OPENAI_API_VERSION=2024-10-21
 ### Development
 
 ```bash
-uvicorn app.main:app --reload --port 8000
+uv run uvicorn app.main:app --reload --port 8000
 ```
 
 ### Production
 
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
 ## API Usage
