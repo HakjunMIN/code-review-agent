@@ -1,6 +1,7 @@
 import logging
 import asyncio
 from typing import Any
+import httpx
 
 from app.config import Settings
 from app.models.schemas import (
@@ -191,42 +192,81 @@ class ReviewService:
         review_body = self.openai_service.format_review_summary(analysis)
         
         try:
-            # Create review with all inline comments
-            response = await github_service.create_review(
-                owner=owner,
-                repo=repo,
-                pr_number=pr_number,
-                commit_id=commit_id,
-                body=review_body,
-                event=analysis.approval_recommendation,
-                comments=inline_comments[:50],  # GitHub limits to ~50 comments per review
-            )
-            
-            review_id = response.get("id")
-            logger.info(f"Posted review with ID: {review_id}")
-            
-            # If there are more than 50 comments, post remaining as separate comments
-            if len(inline_comments) > 50:
-                for comment in inline_comments[50:]:
-                    try:
-                        await github_service.create_review_comment(
+            # Try to create review with inline comments
+            if inline_comments:
+                try:
+                    response = await github_service.create_review(
+                        owner=owner,
+                        repo=repo,
+                        pr_number=pr_number,
+                        commit_id=commit_id,
+                        body=review_body,
+                        event=analysis.approval_recommendation,
+                        comments=inline_comments[:50],  # GitHub limits to ~50 comments per review
+                    )
+                    
+                    review_id = response.get("id")
+                    logger.info(f"Posted review with ID: {review_id} and {len(inline_comments[:50])} inline comments")
+                    
+                    # If there are more than 50 comments, post remaining as separate comments
+                    if len(inline_comments) > 50:
+                        for idx, comment in enumerate(inline_comments[50:], start=51):
+                            try:
+                                await github_service.create_review_comment(
+                                    owner=owner,
+                                    repo=repo,
+                                    pr_number=pr_number,
+                                    commit_id=commit_id,
+                                    path=comment.path,
+                                    line=comment.line,
+                                    body=comment.body,
+                                    side=comment.side,
+                                )
+                            except Exception as e:
+                                logger.warning(f"Failed to post comment #{idx}: {e}")
+                    
+                    return review_id
+                    
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 422:
+                        # 422 error: inline comments likely have invalid line numbers
+                        logger.warning(
+                            f"Failed to post inline comments (422 error): {e.response.text[:500]}. "
+                            "Falling back to review without inline comments."
+                        )
+                        # Retry without inline comments
+                        response = await github_service.create_review(
                             owner=owner,
                             repo=repo,
                             pr_number=pr_number,
                             commit_id=commit_id,
-                            path=comment.path,
-                            line=comment.line,
-                            body=comment.body,
-                            side=comment.side,
+                            body=review_body,
+                            event=analysis.approval_recommendation,
+                            comments=None,
                         )
-                    except Exception as e:
-                        logger.warning(f"Failed to post additional comment: {e}")
-            
-            return review_id
+                        review_id = response.get("id")
+                        logger.info(f"Posted review without inline comments, ID: {review_id}")
+                        return review_id
+                    else:
+                        raise
+            else:
+                # No inline comments, just post review
+                response = await github_service.create_review(
+                    owner=owner,
+                    repo=repo,
+                    pr_number=pr_number,
+                    commit_id=commit_id,
+                    body=review_body,
+                    event=analysis.approval_recommendation,
+                    comments=None,
+                )
+                review_id = response.get("id")
+                logger.info(f"Posted review without inline comments, ID: {review_id}")
+                return review_id
             
         except Exception as e:
-            logger.error(f"Failed to post review: {e}")
-            # Fallback: post as a simple comment
+            logger.error(f"Failed to post review: {e}", exc_info=True)
+            # Fallback: post as a simple issue comment
             try:
                 await github_service.create_issue_comment(
                     owner=owner,

@@ -6,6 +6,7 @@ from app.config import Settings
 from app.models.schemas import (
     CodeIssue, ReviewAnalysis, ReviewEvent, IssueSeverity, IssueType, PRFile
 )
+from app.utils.diff_parser import DiffParser
 
 
 logger = logging.getLogger(__name__)
@@ -17,14 +18,24 @@ Your task is to analyze code changes (diffs) from a Pull Request and provide a t
 
 For each issue you find, provide:
 1. The exact file path
-2. The line number where the issue occurs (use the line number from the new version of the file, shown with + prefix in diff)
+2. The line number where the issue occurs - MUST be a line number that appears with a '+' prefix in the diff
 3. Severity level: critical, high, medium, low, or info
 4. Issue type: bug, security, performance, style, maintainability, or best_practice
 5. A clear description of the issue
 6. A concrete suggestion for how to fix it (with code if applicable)
 
+CRITICAL: Line numbers MUST correspond to lines that were actually changed in the diff (marked with +).
+Only comment on lines that are visible in the diff with a '+' prefix.
+If you want to comment on context, pick the nearest changed line.
+
+For each file, you will see:
+- Changed line ranges: The specific line numbers that were modified (these are the ONLY valid lines for comments)
+- The diff showing what changed
+- Full file content for context
+
 Guidelines:
 - Focus on meaningful issues that impact code quality, security, or functionality
+- ONLY use line numbers from the "Changed lines" list provided for each file
 - Avoid nitpicking on minor style issues unless they significantly impact readability
 - For security issues, explain the potential vulnerability and its impact
 - For bugs, explain what could go wrong and under what conditions
@@ -106,6 +117,14 @@ class AzureOpenAIService:
             prompt_parts.append(f"\n### File: {file.filename}")
             prompt_parts.append(f"Status: {file.status} (+{file.additions}/-{file.deletions})")
             
+            # Extract changed line numbers from the patch
+            changed_lines = DiffParser.parse_patch(file.patch).get('RIGHT', set())
+            if changed_lines:
+                line_ranges = DiffParser.get_changed_line_ranges(file.patch)
+                ranges_str = ", ".join([f"{start}-{end}" if start != end else str(start) 
+                                       for start, end in line_ranges])
+                prompt_parts.append(f"**Changed lines (ONLY these lines can be commented on):** {ranges_str}")
+            
             # Include full file content for context if available
             if file.filename in file_contents and file_contents[file.filename]:
                 prompt_parts.append(f"\n#### Full File Content (for context):")
@@ -174,8 +193,34 @@ class AzureOpenAIService:
             
             # Parse issues
             issues = []
+            invalid_lines = []
             for issue_data in result.get("issues", []):
                 try:
+                    # Validate line number against the file's patch
+                    file_name = issue_data["file"]
+                    line_num = issue_data["line"]
+                    
+                    # Find the corresponding file to check the patch
+                    file_obj = next((f for f in reviewable_files if f.filename == file_name), None)
+                    if file_obj and file_obj.patch:
+                        # Validate line number is in the changed lines
+                        if not DiffParser.is_valid_comment_line(file_obj.patch, line_num, 'RIGHT'):
+                            # Try to find nearest valid line
+                            nearest_line = DiffParser.find_nearest_valid_line(file_obj.patch, line_num)
+                            if nearest_line:
+                                logger.warning(
+                                    f"Issue at {file_name}:{line_num} is invalid, "
+                                    f"adjusting to nearest valid line {nearest_line}"
+                                )
+                                issue_data["line"] = nearest_line
+                            else:
+                                invalid_lines.append(f"{file_name}:{line_num}")
+                                logger.warning(
+                                    f"Skipping issue at {file_name}:{line_num} - "
+                                    "line not in diff, no nearby valid line found"
+                                )
+                                continue
+                    
                     issues.append(CodeIssue(
                         file=issue_data["file"],
                         line=issue_data["line"],
@@ -189,6 +234,9 @@ class AzureOpenAIService:
                 except (KeyError, ValueError) as e:
                     logger.warning(f"Failed to parse issue: {e}, data: {issue_data}")
                     continue
+            
+            if invalid_lines:
+                logger.info(f"Filtered out {len(invalid_lines)} issues with invalid line numbers")
             
             # Parse approval recommendation
             rec_str = result.get("approval_recommendation", "COMMENT").upper()
