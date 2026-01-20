@@ -9,6 +9,7 @@ from app.models.schemas import (
 )
 from app.services.github_service import GitHubService
 from app.services.azure_openai_service import AzureOpenAIService
+from app.services.azure_search_service import AzureSearchService
 
 
 logger = logging.getLogger(__name__)
@@ -93,11 +94,17 @@ class ReviewService:
                         logger.warning(f"Failed to fetch file content: {result}")
             
             # Step 5: Analyze code with Azure OpenAI
+            rag_context = await self._build_rag_context(
+                pr_title=pr_details.title,
+                pr_body=pr_details.body,
+                files=reviewable_files,
+            )
             analysis = await self.openai_service.analyze_code(
                 pr_title=pr_details.title,
                 pr_body=pr_details.body,
                 files=reviewable_files,
                 file_contents=file_contents,
+                rag_context=rag_context,
             )
             
             logger.info(
@@ -279,3 +286,60 @@ class ReviewService:
                 logger.error(f"Fallback comment also failed: {fallback_error}")
             
             return None
+
+    def _build_search_query(
+        self,
+        pr_title: str,
+        pr_body: str | None,
+        files: list[Any],
+    ) -> str:
+        parts: list[str] = [pr_title]
+        if pr_body:
+            parts.append(pr_body)
+
+        file_names = " ".join([f.filename for f in files])
+        if file_names:
+            parts.append(file_names)
+
+        # Add a small sample of added lines to improve retrieval relevance
+        added_lines: list[str] = []
+        for file in files:
+            if not getattr(file, "patch", None):
+                continue
+            for line in str(file.patch).split("\n"):
+                if line.startswith("+") and not line.startswith("+++"):
+                    added_lines.append(line[1:].strip())
+                    if len(added_lines) >= 50:
+                        break
+            if len(added_lines) >= 50:
+                break
+
+        if added_lines:
+            parts.append(" ".join(added_lines))
+
+        query = "\n".join([p for p in parts if p]).strip()
+        return query[:2000]
+
+    async def _build_rag_context(
+        self,
+        pr_title: str,
+        pr_body: str | None,
+        files: list[Any],
+    ) -> str | None:
+        if not self.settings.azure_ai_search_enabled:
+            return None
+
+        if not self.settings.azure_ai_search_endpoint:
+            return None
+
+        if not any([
+            self.settings.azure_ai_search_corporate_index,
+            self.settings.azure_ai_search_project_index,
+            self.settings.azure_ai_search_incident_index,
+        ]):
+            return None
+
+        query = self._build_search_query(pr_title, pr_body, files)
+        search_service = AzureSearchService(self.settings)
+        rag_context = await search_service.build_rag_context(query)
+        return rag_context or None

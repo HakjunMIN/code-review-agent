@@ -86,7 +86,8 @@ class AzureOpenAIService:
         pr_title: str,
         pr_body: str | None,
         files: list[PRFile],
-        file_contents: dict[str, str | None]
+        file_contents: dict[str, str | None],
+        rag_context: str | None = None,
     ) -> str:
         """
         Build the user prompt for code review.
@@ -108,6 +109,14 @@ class AzureOpenAIService:
         if pr_body:
             prompt_parts.append(f"## PR Description:\n{pr_body}\n")
         
+        if rag_context:
+            prompt_parts.append("## Code Standards (Azure AI Search)")
+            prompt_parts.append(
+                "Use the following standards as authoritative guidance for this review."
+            )
+            prompt_parts.append(rag_context)
+            prompt_parts.append("\n---\n")
+
         prompt_parts.append("\n## Changed Files:\n")
         
         for file in files:
@@ -142,7 +151,8 @@ class AzureOpenAIService:
         pr_title: str,
         pr_body: str | None,
         files: list[PRFile],
-        file_contents: dict[str, str | None]
+        file_contents: dict[str, str | None],
+        rag_context: str | None = None,
     ) -> ReviewAnalysis:
         """
         Analyze code changes and generate review.
@@ -170,7 +180,7 @@ class AzureOpenAIService:
             )
         
         user_prompt = self._build_review_prompt(
-            pr_title, pr_body, reviewable_files, file_contents
+            pr_title, pr_body, reviewable_files, file_contents, rag_context
         )
         
         try:

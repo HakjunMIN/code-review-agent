@@ -6,6 +6,7 @@ AI-powered Code Review Agent for GitHub Pull Requests using Azure OpenAI.
 
 - 🔍 **Automatic PR Analysis**: Analyzes code changes in GitHub Pull Requests
 - 🤖 **AI-Powered Reviews**: Uses Azure OpenAI (GPT-4) for intelligent code review
+- 📚 **RAG with Azure AI Search**: Grounds reviews in company/project/incident standards
 - 💬 **Inline Comments**: Posts review comments directly on specific code lines
 - 🎯 **Issue Categorization**: Categorizes issues by type (bug, security, performance, style)
 - ⚠️ **Severity Levels**: Rates issues from critical to info
@@ -24,17 +25,35 @@ AI-powered Code Review Agent for GitHub Pull Requests using Azure OpenAI.
 │  │   │   ├── Fetch PR Details                               │
 │  │   │   ├── Get Changed Files & Diffs                      │
 │  │   │   └── Post Review Comments                           │
+│  │   ├── AzureSearchService (RAG)                           │
+│  │   │   ├── Query Corporate Standards Index                │
+│  │   │   ├── Query Project Standards Index                  │
+│  │   │   └── Query Incident Standards Index                 │
 │  │   └── AzureOpenAIService (Analysis)                      │
+│  │       ├── Build Context with RAG Results                 │
 │  │       ├── Analyze Code Changes                           │
 │  │       └── Generate Review Feedback                       │
 └─────────────────────────────────────────────────────────────┘
 ```
 
+### RAG-Based Review Flow
+
+1. **PR Ingestion**: Fetch PR details, changed files, and diffs from GitHub
+2. **RAG Retrieval**: Query Azure AI Search indexes for relevant coding standards
+   - Corporate standards (company-wide rules)
+   - Project standards (project-specific conventions)
+   - Incident standards (lessons learned from past incidents)
+3. **Context Building**: Combine PR changes with retrieved standards
+4. **AI Analysis**: Azure OpenAI analyzes code against standards and best practices
+5. **Review Posting**: Post inline comments and summary to GitHub PR
+
 ## Prerequisites
 
 - Python 3.11+
 - Azure OpenAI deployment (GPT-4 or GPT-4o recommended)
+- Azure AI Search service (optional, for RAG-based reviews)
 - GitHub Personal Access Token (PAT) with `repo` scope
+- Azure CLI (for authentication): `az login`
 
 ## Installation
 
@@ -64,6 +83,115 @@ AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
 AZURE_OPENAI_API_KEY=your-api-key
 AZURE_OPENAI_DEPLOYMENT=gpt-4o
 AZURE_OPENAI_API_VERSION=2024-10-21
+
+# Azure AI Search (RAG) - uses DefaultAzureCredential (az login)
+AZURE_AI_SEARCH_ENDPOINT=https://your-search.search.windows.net
+AZURE_AI_SEARCH_CORPORATE_INDEX=corporate-standards-index
+AZURE_AI_SEARCH_PROJECT_INDEX=project-standards-index
+AZURE_AI_SEARCH_INCIDENT_INDEX=incident-standards-index
+AZURE_AI_SEARCH_TOP_K=5
+AZURE_AI_SEARCH_MAX_CHARS=2000
+AZURE_AI_SEARCH_ENABLED=true
+```
+
+## Azure AI Search Setup (Optional - for RAG)
+
+### Prerequisites
+
+1. **Azure CLI Authentication**
+
+```bash
+az login
+az account set --subscription <your-subscription-id>
+```
+
+2. **Run Setup Script**
+
+The setup script will:
+- Create Azure AI Search service (if not exists)
+- Create three indexes with proper schema
+- Upload sample coding standards documents
+- Configure RBAC permissions
+
+**Configure environment variables (optional):**
+
+```bash
+export AZURE_SUBSCRIPTION_ID="your-subscription-id"
+export AZURE_RESOURCE_GROUP="your-rg"
+export AZURE_LOCATION="koreacentral"
+export AZURE_AI_SEARCH_SERVICE_NAME="your-search-name"
+```
+
+**Run the setup:**
+
+```bash
+uv run python scripts/setup_ai_search.py
+```
+
+> **Note**: If environment variables are not set, the script will use default values and generate a timestamped service name.
+
+### Index Schema
+
+Each index contains the following fields:
+- `id` (String, Key): Unique document identifier
+- `title` (String, Searchable): Document title
+- `content` (String, Searchable): Standard description and rules
+- `code_sample` (String, Searchable): Example code snippets
+- `doc_type` (String, Filterable): Document category
+- `tags` (Collection<String>, Filterable): Keywords for filtering
+
+### Sample Documents
+
+The setup script creates three indexes with sample standards:
+
+**Corporate Standards** (`corporate-standards-index`):
+- Input validation and error handling
+- Standard error response formats
+- Logging best practices
+
+**Project Standards** (`project-standards-index`):
+- Async HTTP call patterns
+- Timeout and retry configurations
+- Framework-specific conventions
+
+**Incident Standards** (`incident-standards-index`):
+- Sensitive data masking
+- Lessons learned from production incidents
+- Security fixes and patches
+
+### Authentication
+
+Uses **DefaultAzureCredential** (no API keys needed):
+1. Authenticates via `az login`
+2. Requires the following Azure RBAC roles:
+   - `Search Service Contributor` (for index management)
+   - `Search Index Data Contributor` (for querying and indexing)
+
+### Adding Your Own Standards
+
+To add custom coding standards:
+
+```python
+from azure.identity import DefaultAzureCredential
+from azure.search.documents import SearchClient
+
+credential = DefaultAzureCredential()
+search_client = SearchClient(
+    endpoint="https://your-search.search.windows.net",
+    index_name="corporate-standards-index",
+    credential=credential
+)
+
+document = {
+    "id": "corp-002",
+    "title": "API Authentication Standard",
+    "content": "All APIs must use OAuth 2.0 with JWT tokens...",
+    "code_sample": "@require_auth\ndef api_endpoint():\n    ...",
+    "doc_type": "corporate",
+    "tags": ["security", "authentication", "api"]
+}
+
+search_client.upload_documents(documents=[document])
 ```
 
 ## Running the Server
@@ -142,6 +270,13 @@ Once the server is running, visit:
 | `AZURE_OPENAI_API_KEY` | Azure OpenAI API key | Required |
 | `AZURE_OPENAI_DEPLOYMENT` | Model deployment name | `gpt-4o` |
 | `AZURE_OPENAI_API_VERSION` | API version | `2024-10-21` |
+| `AZURE_AI_SEARCH_ENDPOINT` | Azure AI Search endpoint URL | Optional (for RAG) |
+| `AZURE_AI_SEARCH_CORPORATE_INDEX` | Corporate standards index | Optional |
+| `AZURE_AI_SEARCH_PROJECT_INDEX` | Project standards index | Optional |
+| `AZURE_AI_SEARCH_INCIDENT_INDEX` | Post-incident standards index | Optional |
+| `AZURE_AI_SEARCH_TOP_K` | Docs retrieved per index | `5` |
+| `AZURE_AI_SEARCH_MAX_CHARS` | Max chars per doc snippet | `2000` |
+| `AZURE_AI_SEARCH_ENABLED` | Enable RAG retrieval | `true` |
 | `MAX_FILES_PER_REVIEW` | Maximum files to review per PR | `50` |
 | `MAX_FILE_SIZE_KB` | Maximum file size to review | `500` |
 
