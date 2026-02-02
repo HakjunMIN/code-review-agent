@@ -1,6 +1,7 @@
 import json
 import logging
 from openai import AsyncAzureOpenAI
+from azure.identity.aio import DefaultAzureCredential
 
 from app.config import Settings
 from app.models.schemas import (
@@ -74,12 +75,25 @@ class AzureOpenAIService:
     def __init__(self, settings: Settings):
         """Initialize Azure OpenAI service."""
         self.settings = settings
+        
+        # Use Azure AD authentication if API key is not provided or if resource requires it
+        # DefaultAzureCredential will use az login credentials
+        credential = DefaultAzureCredential()
+        
         self.client = AsyncAzureOpenAI(
-            api_key=settings.azure_openai_api_key,
+            azure_ad_token_provider=self._get_token_provider(credential),
             api_version=settings.azure_openai_api_version,
             azure_endpoint=settings.azure_openai_endpoint,
         )
         self.deployment = settings.azure_openai_deployment
+        self.credential = credential
+    
+    def _get_token_provider(self, credential):
+        """Create token provider for Azure AD authentication."""
+        async def get_token():
+            token = await credential.get_token("https://cognitiveservices.azure.com/.default")
+            return token.token
+        return get_token
     
     def _build_review_prompt(
         self, 

@@ -236,9 +236,31 @@ class ReviewService:
                     
                 except httpx.HTTPStatusError as e:
                     if e.response.status_code == 422:
+                        response_text = e.response.text[:500]
+                        
+                        # Check if this is an "own pull request" error
+                        if "own pull request" in response_text.lower():
+                            logger.warning(
+                                f"Cannot use {analysis.approval_recommendation.value} on own PR. "
+                                "Falling back to COMMENT event."
+                            )
+                            # Retry with COMMENT event (allowed on own PRs)
+                            response = await github_service.create_review(
+                                owner=owner,
+                                repo=repo,
+                                pr_number=pr_number,
+                                commit_id=commit_id,
+                                body=review_body,
+                                event=ReviewEvent.COMMENT,
+                                comments=inline_comments[:50],
+                            )
+                            review_id = response.get("id")
+                            logger.info(f"Posted review with COMMENT event, ID: {review_id}")
+                            return review_id
+                        
                         # 422 error: inline comments likely have invalid line numbers
                         logger.warning(
-                            f"Failed to post inline comments (422 error): {e.response.text[:500]}. "
+                            f"Failed to post inline comments (422 error): {response_text}. "
                             "Falling back to review without inline comments."
                         )
                         # Retry without inline comments
@@ -258,18 +280,38 @@ class ReviewService:
                         raise
             else:
                 # No inline comments, just post review
-                response = await github_service.create_review(
-                    owner=owner,
-                    repo=repo,
-                    pr_number=pr_number,
-                    commit_id=commit_id,
-                    body=review_body,
-                    event=analysis.approval_recommendation,
-                    comments=None,
-                )
-                review_id = response.get("id")
-                logger.info(f"Posted review without inline comments, ID: {review_id}")
-                return review_id
+                try:
+                    response = await github_service.create_review(
+                        owner=owner,
+                        repo=repo,
+                        pr_number=pr_number,
+                        commit_id=commit_id,
+                        body=review_body,
+                        event=analysis.approval_recommendation,
+                        comments=None,
+                    )
+                    review_id = response.get("id")
+                    logger.info(f"Posted review without inline comments, ID: {review_id}")
+                    return review_id
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 422 and "own pull request" in e.response.text.lower():
+                        logger.warning(
+                            f"Cannot use {analysis.approval_recommendation.value} on own PR. "
+                            "Falling back to COMMENT event."
+                        )
+                        response = await github_service.create_review(
+                            owner=owner,
+                            repo=repo,
+                            pr_number=pr_number,
+                            commit_id=commit_id,
+                            body=review_body,
+                            event=ReviewEvent.COMMENT,
+                            comments=None,
+                        )
+                        review_id = response.get("id")
+                        logger.info(f"Posted review with COMMENT event, ID: {review_id}")
+                        return review_id
+                    raise
             
         except Exception as e:
             logger.error(f"Failed to post review: {e}", exc_info=True)

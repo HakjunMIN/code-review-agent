@@ -10,6 +10,7 @@ from app.config import Settings
 logger = logging.getLogger(__name__)
 
 
+
 class AzureSearchService:
     """Service for retrieving code standards from Azure AI Search."""
 
