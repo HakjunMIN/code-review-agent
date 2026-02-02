@@ -1,14 +1,19 @@
 import json
 import logging
-from openai import AsyncAzureOpenAI
+
 from azure.identity.aio import DefaultAzureCredential
+from openai import AsyncAzureOpenAI
 
 from app.config import Settings
 from app.models.schemas import (
-    CodeIssue, ReviewAnalysis, ReviewEvent, IssueSeverity, IssueType, PRFile
+    CodeIssue,
+    IssueSeverity,
+    IssueType,
+    PRFile,
+    ReviewAnalysis,
+    ReviewEvent,
 )
 from app.utils.diff_parser import DiffParser
-
 
 logger = logging.getLogger(__name__)
 
