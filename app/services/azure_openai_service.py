@@ -1,8 +1,9 @@
-import json
 import logging
 
-from azure.identity.aio import DefaultAzureCredential
-from openai import AsyncAzureOpenAI
+from agent_framework import Agent
+from agent_framework.azure import AzureOpenAIChatClient
+from azure.identity import DefaultAzureCredential
+from pydantic import BaseModel, Field
 
 from app.config import Settings
 from app.models.schemas import (
@@ -18,7 +19,7 @@ from app.utils.diff_parser import DiffParser
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT = """You are an expert code reviewer with deep knowledge of software engineering best practices, security vulnerabilities, performance optimization, and clean code principles.
+REVIEW_INSTRUCTIONS = """You are an expert code reviewer with deep knowledge of software engineering best practices, security vulnerabilities, performance optimization, and clean code principles.
 
 Your task is to analyze code changes (diffs) from a Pull Request and provide a thorough review.
 
@@ -48,24 +49,6 @@ Guidelines:
 - Provide actionable suggestions with example code when possible
 - Consider the context of changes - don't review unchanged code
 
-Your response must be valid JSON with this structure:
-{
-    "issues": [
-        {
-            "file": "path/to/file.py",
-            "line": 42,
-            "end_line": null,
-            "severity": "high",
-            "type": "bug",
-            "description": "Description of the issue",
-            "suggestion": "Suggested fix with code example",
-            "original_code": "The problematic code snippet"
-        }
-    ],
-    "summary": "Overall assessment of the PR changes",
-    "approval_recommendation": "COMMENT"
-}
-
 The approval_recommendation should be:
 - "APPROVE" if the code is good with only minor suggestions
 - "REQUEST_CHANGES" if there are critical or high severity issues that must be fixed
@@ -74,34 +57,42 @@ The approval_recommendation should be:
 If there are no issues, return an empty issues array with a positive summary."""
 
 
+class CodeReviewResult(BaseModel):
+    """Structured output format for code review."""
+    issues: list[CodeIssue] = Field(default_factory=list, description="List of code issues found")
+    summary: str = Field(..., description="Overall assessment of the PR changes")
+    approval_recommendation: ReviewEvent = Field(
+        default=ReviewEvent.COMMENT,
+        description="Recommendation: APPROVE, REQUEST_CHANGES, or COMMENT"
+    )
+
+
 class AzureOpenAIService:
-    """Service for code analysis using Azure OpenAI."""
-    
+    """Service for code analysis using Azure OpenAI with Microsoft Agent Framework."""
+
     def __init__(self, settings: Settings):
-        """Initialize Azure OpenAI service."""
+        """Initialize Azure OpenAI service with Agent Framework."""
         self.settings = settings
-        
-        # Use Azure AD authentication if API key is not provided or if resource requires it
-        # DefaultAzureCredential will use az login credentials
-        credential = DefaultAzureCredential()
-        
-        self.client = AsyncAzureOpenAI(
-            azure_ad_token_provider=self._get_token_provider(credential),
-            api_version=settings.azure_openai_api_version,
-            azure_endpoint=settings.azure_openai_endpoint,
+
+        # Create AzureOpenAIChatClient for Azure OpenAI
+        client_kwargs: dict = {
+            "deployment_name": settings.azure_openai_deployment,
+            "api_version": settings.azure_openai_api_version,
+            "endpoint": settings.azure_openai_endpoint,
+            "credential": DefaultAzureCredential()
+        }
+
+        model_client = AzureOpenAIChatClient(**client_kwargs)
+
+        self.review_agent = Agent(
+            model_client,
+            instructions=REVIEW_INSTRUCTIONS,
+            name="code_reviewer",
+            default_options={"response_format": CodeReviewResult},
         )
-        self.deployment = settings.azure_openai_deployment
-        self.credential = credential
-    
-    def _get_token_provider(self, credential):
-        """Create token provider for Azure AD authentication."""
-        async def get_token():
-            token = await credential.get_token("https://cognitiveservices.azure.com/.default")
-            return token.token
-        return get_token
-    
+
     def _build_review_prompt(
-        self, 
+        self,
         pr_title: str,
         pr_body: str | None,
         files: list[PRFile],
@@ -110,24 +101,24 @@ class AzureOpenAIService:
     ) -> str:
         """
         Build the user prompt for code review.
-        
+
         Args:
             pr_title: PR title
             pr_body: PR description
             files: List of changed files with patches
             file_contents: Dict mapping filename to full file content
-            
+
         Returns:
             Formatted prompt string
         """
         prompt_parts = [
-            f"# Pull Request Review Request\n",
+            "# Pull Request Review Request\n",
             f"## PR Title: {pr_title}\n",
         ]
-        
+
         if pr_body:
             prompt_parts.append(f"## PR Description:\n{pr_body}\n")
-        
+
         if rag_context:
             prompt_parts.append("## Code Standards (Azure AI Search)")
             prompt_parts.append(
@@ -137,34 +128,34 @@ class AzureOpenAIService:
             prompt_parts.append("\n---\n")
 
         prompt_parts.append("\n## Changed Files:\n")
-        
+
         for file in files:
             if not file.patch:
                 continue
-                
+
             prompt_parts.append(f"\n### File: {file.filename}")
             prompt_parts.append(f"Status: {file.status} (+{file.additions}/-{file.deletions})")
-            
+
             # Extract changed line numbers from the patch
             changed_lines = DiffParser.parse_patch(file.patch).get('RIGHT', set())
             if changed_lines:
                 line_ranges = DiffParser.get_changed_line_ranges(file.patch)
-                ranges_str = ", ".join([f"{start}-{end}" if start != end else str(start) 
+                ranges_str = ", ".join([f"{start}-{end}" if start != end else str(start)
                                        for start, end in line_ranges])
                 prompt_parts.append(f"**Changed lines (ONLY these lines can be commented on):** {ranges_str}")
-            
+
             # Include full file content for context if available
             if file.filename in file_contents and file_contents[file.filename]:
-                prompt_parts.append(f"\n#### Full File Content (for context):")
+                prompt_parts.append("\n#### Full File Content (for context):")
                 prompt_parts.append(f"```\n{file_contents[file.filename]}\n```")
-            
-            prompt_parts.append(f"\n#### Diff/Patch:")
+
+            prompt_parts.append("\n#### Diff/Patch:")
             prompt_parts.append(f"```diff\n{file.patch}\n```\n")
-        
+
         prompt_parts.append("\nPlease review the above changes and provide your analysis in JSON format.")
-        
+
         return "\n".join(prompt_parts)
-    
+
     async def analyze_code(
         self,
         pr_title: str,
@@ -174,20 +165,21 @@ class AzureOpenAIService:
         rag_context: str | None = None,
     ) -> ReviewAnalysis:
         """
-        Analyze code changes and generate review.
-        
+        Analyze code changes and generate review using Agent Framework.
+
         Args:
             pr_title: PR title
             pr_body: PR description
             files: List of changed files with patches
             file_contents: Dict mapping filename to full file content
-            
+            rag_context: Optional RAG context from Azure AI Search
+
         Returns:
             ReviewAnalysis with issues and recommendations
         """
         # Filter files with patches
         reviewable_files = [f for f in files if f.patch]
-        
+
         if not reviewable_files:
             return ReviewAnalysis(
                 issues=[],
@@ -197,119 +189,99 @@ class AzureOpenAIService:
                 total_issues=0,
                 critical_issues=0,
             )
-        
+
         user_prompt = self._build_review_prompt(
             pr_title, pr_body, reviewable_files, file_contents, rag_context
         )
-        
+
         try:
-            response = await self.client.chat.completions.create(
-                model=self.deployment,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.3,
-                max_tokens=4000,
-                response_format={"type": "json_object"},
+            # Run agent with structured output
+            response = await self.review_agent.run(messages=user_prompt)
+
+            # Agent Framework returns structured response via .value
+            result: CodeReviewResult = (
+                response.value
+                if isinstance(response.value, CodeReviewResult)
+                else CodeReviewResult.model_validate_json(response.value)
             )
-            
-            content = response.choices[0].message.content
-            if not content:
-                raise ValueError("Empty response from Azure OpenAI")
-            
-            result = json.loads(content)
-            
-            # Parse issues
-            issues = []
+
+            # Validate and filter issues based on diff line numbers
+            valid_issues = []
             invalid_lines = []
-            for issue_data in result.get("issues", []):
+
+            for issue in result.issues:
                 try:
-                    # Validate line number against the file's patch
-                    file_name = issue_data["file"]
-                    line_num = issue_data["line"]
-                    
                     # Find the corresponding file to check the patch
-                    file_obj = next((f for f in reviewable_files if f.filename == file_name), None)
-                    if file_obj and file_obj.patch:
-                        # Validate line number is in the changed lines
-                        if not DiffParser.is_valid_comment_line(file_obj.patch, line_num, 'RIGHT'):
-                            # Try to find nearest valid line
-                            nearest_line = DiffParser.find_nearest_valid_line(file_obj.patch, line_num)
-                            if nearest_line:
-                                logger.warning(
-                                    f"Issue at {file_name}:{line_num} is invalid, "
-                                    f"adjusting to nearest valid line {nearest_line}"
-                                )
-                                issue_data["line"] = nearest_line
-                            else:
-                                invalid_lines.append(f"{file_name}:{line_num}")
-                                logger.warning(
-                                    f"Skipping issue at {file_name}:{line_num} - "
-                                    "line not in diff, no nearby valid line found"
-                                )
-                                continue
-                    
-                    issues.append(CodeIssue(
-                        file=issue_data["file"],
-                        line=issue_data["line"],
-                        end_line=issue_data.get("end_line"),
-                        severity=IssueSeverity(issue_data["severity"]),
-                        type=IssueType(issue_data["type"]),
-                        description=issue_data["description"],
-                        suggestion=issue_data.get("suggestion"),
-                        original_code=issue_data.get("original_code"),
-                    ))
+                    file_obj = next((f for f in reviewable_files if f.filename == issue.file), None)
+                    if file_obj and file_obj.patch and not DiffParser.is_valid_comment_line(file_obj.patch, issue.line, 'RIGHT'):
+                        # Try to find nearest valid line
+                        nearest_line = DiffParser.find_nearest_valid_line(file_obj.patch, issue.line)
+                        if nearest_line:
+                            logger.warning(
+                                f"Issue at {issue.file}:{issue.line} is invalid, "
+                                f"adjusting to nearest valid line {nearest_line}"
+                            )
+                            # Create new issue with corrected line number
+                            issue = CodeIssue(
+                                file=issue.file,
+                                line=nearest_line,
+                                end_line=issue.end_line,
+                                severity=issue.severity,
+                                type=issue.type,
+                                description=issue.description,
+                                suggestion=issue.suggestion,
+                                original_code=issue.original_code,
+                            )
+                        else:
+                            invalid_lines.append(f"{issue.file}:{issue.line}")
+                            logger.warning(
+                                f"Skipping issue at {issue.file}:{issue.line} - "
+                                "line not in diff, no nearby valid line found"
+                            )
+                            continue
+
+                    valid_issues.append(issue)
+
                 except (KeyError, ValueError) as e:
-                    logger.warning(f"Failed to parse issue: {e}, data: {issue_data}")
+                    logger.warning(f"Failed to validate issue: {e}, issue: {issue}")
                     continue
-            
+
             if invalid_lines:
                 logger.info(f"Filtered out {len(invalid_lines)} issues with invalid line numbers")
-            
-            # Parse approval recommendation
-            rec_str = result.get("approval_recommendation", "COMMENT").upper()
-            try:
-                approval_rec = ReviewEvent(rec_str)
-            except ValueError:
-                approval_rec = ReviewEvent.COMMENT
-            
+
             # Count critical issues
             critical_count = sum(
-                1 for i in issues 
+                1 for i in valid_issues
                 if i.severity in (IssueSeverity.CRITICAL, IssueSeverity.HIGH)
             )
-            
+
             return ReviewAnalysis(
-                issues=issues,
-                summary=result.get("summary", "Review completed."),
-                approval_recommendation=approval_rec,
+                issues=valid_issues,
+                summary=result.summary,
+                approval_recommendation=result.approval_recommendation,
                 files_reviewed=len(reviewable_files),
-                total_issues=len(issues),
+                total_issues=len(valid_issues),
                 critical_issues=critical_count,
             )
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON response: {e}")
+
+        except Exception as e:
+            logger.error(f"Agent Framework error: {e}")
             return ReviewAnalysis(
                 issues=[],
-                summary=f"Failed to parse review response: {e}",
+                summary=f"Failed to complete review: {e}",
                 approval_recommendation=ReviewEvent.COMMENT,
                 files_reviewed=len(reviewable_files),
                 total_issues=0,
                 critical_issues=0,
             )
-        except Exception as e:
-            logger.error(f"Azure OpenAI API error: {e}")
-            raise
-    
+
     def format_issue_as_github_comment(self, issue: CodeIssue) -> str:
         """
         Format a code issue as a GitHub-compatible markdown comment.
-        
+
         Args:
             issue: CodeIssue to format
-            
+
         Returns:
             Formatted markdown string
         """
@@ -320,7 +292,7 @@ class AzureOpenAIService:
             IssueSeverity.LOW: "💡",
             IssueSeverity.INFO: "ℹ️",
         }
-        
+
         type_labels = {
             IssueType.BUG: "Bug",
             IssueType.SECURITY: "Security",
@@ -329,31 +301,31 @@ class AzureOpenAIService:
             IssueType.MAINTAINABILITY: "Maintainability",
             IssueType.BEST_PRACTICE: "Best Practice",
         }
-        
+
         emoji = severity_emoji.get(issue.severity, "📝")
         label = type_labels.get(issue.type, "Issue")
-        
+
         comment_parts = [
             f"{emoji} **{label}** ({issue.severity.value})\n",
             f"{issue.description}\n",
         ]
-        
+
         if issue.suggestion:
             # Use GitHub suggestion block for code suggestions
             if "```" not in issue.suggestion and "\n" in issue.suggestion:
                 comment_parts.append(f"\n```suggestion\n{issue.suggestion}\n```")
             else:
                 comment_parts.append(f"\n**Suggestion:** {issue.suggestion}")
-        
+
         return "\n".join(comment_parts)
-    
+
     def format_review_summary(self, analysis: ReviewAnalysis) -> str:
         """
         Format the complete review analysis as a summary comment.
-        
+
         Args:
             analysis: ReviewAnalysis to format
-            
+
         Returns:
             Formatted markdown string
         """
@@ -364,33 +336,33 @@ class AzureOpenAIService:
             f"**Critical/High Issues:** {analysis.critical_issues}\n",
             f"## Summary\n{analysis.summary}\n",
         ]
-        
+
         if analysis.issues:
             parts.append("## Issues by Severity\n")
-            
+
             # Group issues by severity
             severity_order = [
                 IssueSeverity.CRITICAL,
-                IssueSeverity.HIGH, 
+                IssueSeverity.HIGH,
                 IssueSeverity.MEDIUM,
                 IssueSeverity.LOW,
                 IssueSeverity.INFO,
             ]
-            
+
             for severity in severity_order:
                 severity_issues = [i for i in analysis.issues if i.severity == severity]
                 if severity_issues:
                     parts.append(f"\n### {severity.value.title()} ({len(severity_issues)})\n")
                     for issue in severity_issues:
                         parts.append(f"- **{issue.file}:{issue.line}** - {issue.description}")
-        
+
         recommendation_emoji = {
             ReviewEvent.APPROVE: "✅",
             ReviewEvent.REQUEST_CHANGES: "❌",
             ReviewEvent.COMMENT: "💬",
         }
-        
+
         emoji = recommendation_emoji.get(analysis.approval_recommendation, "💬")
         parts.append(f"\n---\n{emoji} **Recommendation:** {analysis.approval_recommendation.value}")
-        
+
         return "\n".join(parts)

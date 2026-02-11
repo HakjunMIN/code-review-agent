@@ -3,7 +3,7 @@ name = "code-review-agent"
 version = "1.0.0"
 description = "AI-powered Code Review Agent for GitHub Pull Requests using Azure OpenAI"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 license = { text = "MIT" }
 authors = [
     { name = "Code Review Agent Team" }
@@ -21,6 +21,7 @@ dependencies = [
     "azure-identity>=1.25.1",
     "azure-search-documents>=11.6.0",
     "aiohttp>=3.9.0",
+    "agent-framework>=1.0.0b260210",
 ]
 
 [project.optional-dependencies]
@@ -41,6 +42,7 @@ build-backend = "hatchling.build"
 packages = ["app"]
 
 [tool.uv]
+prerelease = "allow"
 dev-dependencies = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",

@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     azure_openai_endpoint: str
     azure_openai_api_key: str | None = None  # Optional, uses Azure AD if not provided
     azure_openai_deployment: str = "gpt-4o"
-    azure_openai_api_version: str = "2024-10-21"
+    azure_openai_api_version: str = "2025-01-01-preview"
 
     # Azure AI Search (RAG) Configuration - uses DefaultAzureCredential
     azure_ai_search_endpoint: str | None = None
