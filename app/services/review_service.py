@@ -103,12 +103,15 @@ class ReviewService:
                 pr_body=pr_details.body,
                 files=reviewable_files,
             )
+            rag_context_text = rag_context["context"]
+            referenced_standard_types = rag_context["standard_types"]
+            rag_referenced = bool(rag_context_text and rag_context_text.strip())
             analysis = await self.openai_service.analyze_code(
                 pr_title=pr_details.title,
                 pr_body=pr_details.body,
                 files=reviewable_files,
                 file_contents=file_contents,
-                rag_context=rag_context,
+                rag_context=rag_context_text,
             )
 
             logger.info(
@@ -124,6 +127,8 @@ class ReviewService:
                 pr_number=pr_number,
                 commit_id=pr_details.head_sha,
                 analysis=analysis,
+                rag_referenced=rag_referenced,
+                referenced_standard_types=referenced_standard_types,
             )
 
             return ReviewResponse(
@@ -172,6 +177,8 @@ class ReviewService:
         pr_number: int,
         commit_id: str,
         analysis: ReviewAnalysis,
+        rag_referenced: bool = False,
+        referenced_standard_types: list[str] | None = None,
     ) -> int | None:
         """
         Post review with inline comments to GitHub.
@@ -200,7 +207,11 @@ class ReviewService:
             ))
 
         # Build review summary
-        review_body = self.openai_service.format_review_summary(analysis)
+        review_body = self.openai_service.format_review_summary(
+            analysis,
+            rag_referenced=rag_referenced,
+            referenced_standard_types=referenced_standard_types,
+        )
 
         try:
             # Try to create review with inline comments
@@ -371,18 +382,21 @@ class ReviewService:
         pr_title: str,
         pr_body: str | None,
         files: list[Any],
-    ) -> str | None:
+    ) -> dict[str, str | list[str] | None]:
         if not self.settings.azure_ai_search_enabled:
-            return None
+            return {"context": None, "standard_types": []}
 
         if not self.settings.azure_ai_search_endpoint:
-            return None
+            return {"context": None, "standard_types": []}
 
         if not self.settings.azure_ai_search_standards_index:
-            return None
+            return {"context": None, "standard_types": []}
 
         query = self._build_search_query(pr_title, pr_body, files)
         changed_files = [str(f.filename) for f in files if getattr(f, "filename", None)]
         search_service = AzureSearchService(self.settings)
-        rag_context = await search_service.build_rag_context(query, changed_files)
-        return rag_context or None
+        rag_context, referenced_standard_types = await search_service.build_rag_context(query, changed_files)
+        return {
+            "context": rag_context or None,
+            "standard_types": referenced_standard_types,
+        }

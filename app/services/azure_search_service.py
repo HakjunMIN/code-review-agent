@@ -2,9 +2,10 @@ import logging
 from fnmatch import fnmatch
 from typing import Any
 
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.search.documents import SearchClient
-from azure.search.documents.models import VectorizableTextQuery
+from azure.search.documents.models import VectorizedQuery
+from openai import AzureOpenAI
 
 from app.config import Settings
 
@@ -17,12 +18,34 @@ class AzureSearchService:
         self.settings = settings
         self.endpoint = settings.azure_ai_search_endpoint
         self._credential = None
+        self._embedding_client: AzureOpenAI | None = None
 
     @property
     def credential(self):
         if self._credential is None:
             self._credential = DefaultAzureCredential()
         return self._credential
+
+    @property
+    def embedding_client(self) -> AzureOpenAI:
+        if self._embedding_client is None:
+            token_provider = get_bearer_token_provider(
+                self.credential,
+                "https://cognitiveservices.azure.com/.default",
+            )
+            self._embedding_client = AzureOpenAI(
+                azure_endpoint=self.settings.azure_openai_endpoint,
+                api_version=self.settings.azure_openai_api_version,
+                azure_ad_token_provider=token_provider,
+            )
+        return self._embedding_client
+
+    def _embed_query(self, query: str) -> list[float]:
+        response = self.embedding_client.embeddings.create(
+            model=self.settings.azure_openai_embedding_deployment,
+            input=[query],
+        )
+        return response.data[0].embedding
 
     async def search_index(
         self,
@@ -41,10 +64,11 @@ class AzureSearchService:
                 index_name=index_name,
                 credential=self.credential
             )
-            vector_query = VectorizableTextQuery(
-                text=query,
+            query_vector = self._embed_query(query)
+            vector_query = VectorizedQuery(
+                vector=query_vector,
                 fields="content_vector",
-                k_nearest_neighbors=max(top_k, self.settings.azure_ai_search_semantic_top_k),
+                k=max(top_k, self.settings.azure_ai_search_semantic_top_k),
             )
             results = search_client.search(
                 search_text=query,
@@ -127,14 +151,22 @@ class AzureSearchService:
 
         return "\n".join(parts)
 
-    async def build_rag_context(self, query: str, changed_files: list[str]) -> str:
+    def _collect_standard_types(self, docs: list[dict[str, Any]]) -> list[str]:
+        types: list[str] = []
+        for doc in docs:
+            standard_type = str(doc.get("standard_type", "")).strip().lower()
+            if standard_type and standard_type not in types:
+                types.append(standard_type)
+        return types
+
+    async def build_rag_context(self, query: str, changed_files: list[str]) -> tuple[str, list[str]]:
         """Build a combined RAG context from configured indices."""
         if not self.endpoint:
-            return ""
+            return "", []
 
         sections: list[str] = []
         if not self.settings.azure_ai_search_standards_index:
-            return ""
+            return "", []
 
         filter_expression = self._build_filter_expression(changed_files)
         docs = await self.search_index(
@@ -146,10 +178,13 @@ class AzureSearchService:
         filtered_docs = self._filter_documents(docs, changed_files)
 
         if not filtered_docs:
-            return ""
+            return "", []
+
+        referenced_docs = filtered_docs[: self.settings.azure_ai_search_top_k]
+        referenced_types = self._collect_standard_types(referenced_docs)
 
         sections.append(f"### 코드 표준 ({self.settings.azure_ai_search_standards_index})")
-        for doc in filtered_docs[: self.settings.azure_ai_search_top_k]:
+        for doc in referenced_docs:
             sections.append(self._format_doc(doc, self.settings.azure_ai_search_max_chars))
 
-        return "\n\n".join(sections)
+        return "\n\n".join(sections), referenced_types

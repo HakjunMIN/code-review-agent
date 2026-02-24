@@ -1,7 +1,7 @@
 import logging
 
 from agent_framework import Agent
-from agent_framework.azure import AzureOpenAIChatClient
+from agent_framework.azure import AzureOpenAIChatClient, AzureOpenAIResponsesClient
 from azure.identity import DefaultAzureCredential
 from pydantic import BaseModel, Field
 
@@ -82,7 +82,13 @@ class AzureOpenAIService:
             "credential": DefaultAzureCredential()
         }
 
-        model_client = AzureOpenAIChatClient(**client_kwargs)
+        deployment_name = (settings.azure_openai_deployment or "").lower()
+        if "codex" in deployment_name:
+            model_client = AzureOpenAIResponsesClient(**client_kwargs)
+            logger.info("Using Azure OpenAI Responses client for codex deployment")
+        else:
+            model_client = AzureOpenAIChatClient(**client_kwargs)
+            logger.info("Using Azure OpenAI Chat client")
 
         self.review_agent = Agent(
             model_client,
@@ -319,7 +325,12 @@ class AzureOpenAIService:
 
         return "\n".join(comment_parts)
 
-    def format_review_summary(self, analysis: ReviewAnalysis) -> str:
+    def format_review_summary(
+        self,
+        analysis: ReviewAnalysis,
+        rag_referenced: bool = False,
+        referenced_standard_types: list[str] | None = None,
+    ) -> str:
         """
         Format the complete review analysis as a summary comment.
 
@@ -336,6 +347,28 @@ class AzureOpenAIService:
             f"**Critical/High Issues:** {analysis.critical_issues}\n",
             f"## Summary\n{analysis.summary}\n",
         ]
+
+        if rag_referenced:
+            standard_types = referenced_standard_types or []
+            if standard_types:
+                type_labels = {
+                    "corporate": "corporate",
+                    "team": "team",
+                    "repository": "repository",
+                    "file_history": "file_history",
+                    "postmortem": "postmortem",
+                }
+                referenced_types_text = ", ".join(
+                    [type_labels.get(standard_type, standard_type) for standard_type in standard_types]
+                )
+                parts.append(
+                    "ℹ️ 본 리뷰는 Azure AI Search에 저장된 코드 표준 및 조치 가이드를 참조하여 작성되었습니다. "
+                    f"참조한 코딩 표준 유형: {referenced_types_text}.\n"
+                )
+            else:
+                parts.append(
+                    "ℹ️ 본 리뷰는 Azure AI Search에 저장된 코드 표준 및 조치 가이드를 참조하여 작성되었습니다.\n"
+                )
 
         if analysis.issues:
             parts.append("## Issues by Severity\n")

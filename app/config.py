@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     azure_ai_search_semantic_top_k: int = 12
     azure_ai_search_max_chars: int = 2000
     azure_ai_search_enabled: bool = True
+    standards_docs_path: str = "standards"
     
     # Optional default GitHub PAT
     github_pat: str | None = None
