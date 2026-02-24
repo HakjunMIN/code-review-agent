@@ -65,7 +65,7 @@ class ReviewService:
 
             # Filter files by size limit
             reviewable_files = [
-                f for f in files 
+                f for f in files
                 if f.changes <= self.settings.max_file_size_kb * 10  # rough estimate
             ][:self.settings.max_files_per_review]
 
@@ -83,7 +83,7 @@ class ReviewService:
                 if file.status != "removed":
                     fetch_tasks.append(
                         self._fetch_file_content(
-                            github_service, owner, repo, 
+                            github_service, owner, repo,
                             file.filename, pr_details.head_sha
                         )
                     )
@@ -153,7 +153,7 @@ class ReviewService:
             )
 
     async def _fetch_file_content(
-        self, 
+        self,
         github_service: GitHubService,
         owner: str,
         repo: str,
@@ -378,14 +378,11 @@ class ReviewService:
         if not self.settings.azure_ai_search_endpoint:
             return None
 
-        if not any([
-            self.settings.azure_ai_search_corporate_index,
-            self.settings.azure_ai_search_project_index,
-            self.settings.azure_ai_search_incident_index,
-        ]):
+        if not self.settings.azure_ai_search_standards_index:
             return None
 
         query = self._build_search_query(pr_title, pr_body, files)
+        changed_files = [str(f.filename) for f in files if getattr(f, "filename", None)]
         search_service = AzureSearchService(self.settings)
-        rag_context = await search_service.build_rag_context(query)
+        rag_context = await search_service.build_rag_context(query, changed_files)
         return rag_context or None

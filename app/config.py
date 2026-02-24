@@ -10,13 +10,13 @@ class Settings(BaseSettings):
     azure_openai_api_key: str | None = None  # Optional, uses Azure AD if not provided
     azure_openai_deployment: str = "gpt-4o"
     azure_openai_api_version: str = "2025-01-01-preview"
+    azure_openai_embedding_deployment: str = "text-embedding-3-small"
 
     # Azure AI Search (RAG) Configuration - uses DefaultAzureCredential
     azure_ai_search_endpoint: str | None = None
-    azure_ai_search_corporate_index: str | None = None
-    azure_ai_search_project_index: str | None = None
-    azure_ai_search_incident_index: str | None = None
+    azure_ai_search_standards_index: str | None = None
     azure_ai_search_top_k: int = 5
+    azure_ai_search_semantic_top_k: int = 12
     azure_ai_search_max_chars: int = 2000
     azure_ai_search_enabled: bool = True
     

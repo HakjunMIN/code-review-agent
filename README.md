@@ -82,16 +82,17 @@ Edit `.env` with your Azure OpenAI credentials:
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
 AZURE_OPENAI_API_KEY=your-api-key
 AZURE_OPENAI_DEPLOYMENT=gpt-4o
-AZURE_OPENAI_API_VERSION=2024-10-21
+AZURE_OPENAI_API_VERSION=2025-01-01-preview
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-small
 
 # Azure AI Search (RAG) - uses DefaultAzureCredential (az login)
 AZURE_AI_SEARCH_ENDPOINT=https://your-search.search.windows.net
-AZURE_AI_SEARCH_CORPORATE_INDEX=corporate-standards-index
-AZURE_AI_SEARCH_PROJECT_INDEX=project-standards-index
-AZURE_AI_SEARCH_INCIDENT_INDEX=incident-standards-index
+AZURE_AI_SEARCH_STANDARDS_INDEX=code-standards-index
 AZURE_AI_SEARCH_TOP_K=5
+AZURE_AI_SEARCH_SEMANTIC_TOP_K=12
 AZURE_AI_SEARCH_MAX_CHARS=2000
 AZURE_AI_SEARCH_ENABLED=true
+STANDARDS_DOCS_PATH=standards
 ```
 
 ## Azure AI Search Setup (Optional - for RAG)
@@ -109,8 +110,9 @@ az account set --subscription <your-subscription-id>
 
 The setup script will:
 - Create Azure AI Search service (if not exists)
-- Create three indexes with proper schema
-- Upload sample coding standards documents
+- Create a single hybrid index with semantic/vector configuration
+- Parse markdown standards from `standards/` (with required frontmatter)
+- Upload chunked coding standards documents with embeddings
 - Configure RBAC permissions
 
 **Configure environment variables (optional):**
@@ -132,32 +134,49 @@ uv run python scripts/setup_ai_search.py
 
 ### Index Schema
 
-Each index contains the following fields:
+The standards index includes these key fields:
 - `id` (String, Key): Unique document identifier
+- `standard_id` (String, Filterable): Logical standard document id
+- `standard_type` (String, Filterable): `corporate`, `team`, `repository`, `file_history`, `postmortem`
+- `applies_scope` (String, Filterable): `always` or `conditional`
 - `title` (String, Searchable): Document title
 - `content` (String, Searchable): Standard description and rules
-- `code_sample` (String, Searchable): Example code snippets
-- `doc_type` (String, Filterable): Document category
 - `tags` (Collection<String>, Filterable): Keywords for filtering
+- `applies_to_globs` (Collection<String>, Filterable): File glob targets
+- `affected_files` (Collection<String>, Filterable): Explicit file paths
+- `content_vector` (Collection<Float>): Embedding vector for hybrid retrieval
 
 ### Sample Documents
 
-The setup script creates three indexes with sample standards:
+Sample standards are provided in `standards/` with five categories:
 
-**Corporate Standards** (`corporate-standards-index`):
-- Input validation and error handling
-- Standard error response formats
-- Logging best practices
+1. Corporate standards (always included)
+2. Team standards (always included)
+3. Repository standards (always included)
+4. File-level action history (included only when reviewed files match)
+5. Postmortem action guides (included only when reviewed files match)
 
-**Project Standards** (`project-standards-index`):
-- Async HTTP call patterns
-- Timeout and retry configurations
-- Framework-specific conventions
+Each markdown document must include frontmatter like:
 
-**Incident Standards** (`incident-standards-index`):
-- Sensitive data masking
-- Lessons learned from production incidents
-- Security fixes and patches
+```md
+---
+standard_id: repo-001
+standard_type: repository
+title: 리포지토리 표준 - Azure AI Search 조회 규약
+applies_scope: always
+tags: ["azure-ai-search", "rag"]
+language: python
+updated_at: 2026-02-24
+repo: code-review-agent
+team: backend
+severity: high
+applies_to_globs: ["app/services/**/*.py"]
+affected_files: []
+related_paths: []
+postmortem_id: ""
+---
+문서 본문...
+```
 
 ### Authentication
 
@@ -169,30 +188,16 @@ Uses **DefaultAzureCredential** (no API keys needed):
 
 ### Adding Your Own Standards
 
-To add custom coding standards:
+1. Add markdown files under `standards/` with required frontmatter.
+2. Run the setup/indexing script:
 
-```python
-from azure.identity import DefaultAzureCredential
-from azure.search.documents import SearchClient
-
-credential = DefaultAzureCredential()
-search_client = SearchClient(
-    endpoint="https://your-search.search.windows.net",
-    index_name="corporate-standards-index",
-    credential=credential
-)
-
-document = {
-    "id": "corp-002",
-    "title": "API Authentication Standard",
-    "content": "All APIs must use OAuth 2.0 with JWT tokens...",
-    "code_sample": "@require_auth\ndef api_endpoint():\n    ...",
-    "doc_type": "corporate",
-    "tags": ["security", "authentication", "api"]
-}
-
-search_client.upload_documents(documents=[document])
+```bash
+uv run python scripts/setup_ai_search.py
 ```
+
+The application retrieval logic enforces:
+- `corporate`, `team`, `repository` standards are always included.
+- `file_history`, `postmortem` are included only when changed files match `affected_files` or `applies_to_globs`.
 
 ## Running the Server
 
@@ -269,14 +274,15 @@ Once the server is running, visit:
 | `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint URL | Required |
 | `AZURE_OPENAI_API_KEY` | Azure OpenAI API key | Required |
 | `AZURE_OPENAI_DEPLOYMENT` | Model deployment name | `gpt-4o` |
-| `AZURE_OPENAI_API_VERSION` | API version | `2024-10-21` |
+| `AZURE_OPENAI_API_VERSION` | API version | `2025-01-01-preview` |
+| `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` | Embedding deployment name | `text-embedding-3-small` |
 | `AZURE_AI_SEARCH_ENDPOINT` | Azure AI Search endpoint URL | Optional (for RAG) |
-| `AZURE_AI_SEARCH_CORPORATE_INDEX` | Corporate standards index | Optional |
-| `AZURE_AI_SEARCH_PROJECT_INDEX` | Project standards index | Optional |
-| `AZURE_AI_SEARCH_INCIDENT_INDEX` | Post-incident standards index | Optional |
-| `AZURE_AI_SEARCH_TOP_K` | Docs retrieved per index | `5` |
+| `AZURE_AI_SEARCH_STANDARDS_INDEX` | Unified standards index | `code-standards-index` |
+| `AZURE_AI_SEARCH_TOP_K` | Docs passed to prompt | `5` |
+| `AZURE_AI_SEARCH_SEMANTIC_TOP_K` | Docs fetched before filter | `12` |
 | `AZURE_AI_SEARCH_MAX_CHARS` | Max chars per doc snippet | `2000` |
 | `AZURE_AI_SEARCH_ENABLED` | Enable RAG retrieval | `true` |
+| `STANDARDS_DOCS_PATH` | Markdown standards root directory | `standards` |
 | `MAX_FILES_PER_REVIEW` | Maximum files to review per PR | `50` |
 | `MAX_FILE_SIZE_KB` | Maximum file size to review | `500` |
 
