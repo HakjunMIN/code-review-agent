@@ -7,7 +7,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.routers import review
 
-
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -17,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_: FastAPI):
     """Application lifespan handler."""
     # Startup
     settings = get_settings()
@@ -33,16 +32,16 @@ app = FastAPI(
     title="Code Review Agent",
     description="""
     AI-powered Code Review Agent for GitHub Pull Requests.
-    
+
     This service analyzes code changes in GitHub PRs using Azure OpenAI
     and automatically posts review comments with actionable feedback.
-    
+
     ## Features
     - Automatic code analysis for bugs, security issues, and best practices
     - Inline comments on specific code lines
     - Severity-based issue categorization
     - GitHub suggestion blocks for easy fixes
-    
+
     ## Usage
     1. POST your PR URL and GitHub PAT to `/api/v1/review`
     2. The agent will analyze the PR and post review comments

@@ -5,36 +5,13 @@ AI-powered Code Review Agent for GitHub Pull Requests using Azure OpenAI.
 ## Features
 
 - 🔍 **Automatic PR Analysis**: Analyzes code changes in GitHub Pull Requests
-- 🤖 **AI-Powered Reviews**: Uses Azure OpenAI (GPT-4) for intelligent code review
-- 📚 **RAG with Azure AI Search**: Grounds reviews in company/project/incident standards
+- 🤖 **AI-Powered Reviews**: Uses Azure OpenAI (Codex model recommended) for intelligent code review
+- 📚 **RAG with Azure AI Search**: Grounds reviews in coding standards by type (`corporate`, `team`, `repository`, `file_history`, `postmortem`)
 - 💬 **Inline Comments**: Posts review comments directly on specific code lines
 - 🎯 **Issue Categorization**: Categorizes issues by type (bug, security, performance, style)
 - ⚠️ **Severity Levels**: Rates issues from critical to info
 - 💡 **Actionable Suggestions**: Provides code suggestions using GitHub suggestion blocks
 - ✅ **Review Decisions**: Recommends APPROVE, REQUEST_CHANGES, or COMMENT
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    FastAPI Application                       │
-├─────────────────────────────────────────────────────────────┤
-│  POST /api/v1/review                                        │
-│  ├── ReviewService (Orchestration)                          │
-│  │   ├── GitHubService (API Integration)                    │
-│  │   │   ├── Fetch PR Details                               │
-│  │   │   ├── Get Changed Files & Diffs                      │
-│  │   │   └── Post Review Comments                           │
-│  │   ├── AzureSearchService (RAG)                           │
-│  │   │   ├── Query Corporate Standards Index                │
-│  │   │   ├── Query Project Standards Index                  │
-│  │   │   └── Query Incident Standards Index                 │
-│  │   └── AzureOpenAIService (Analysis)                      │
-│  │       ├── Build Context with RAG Results                 │
-│  │       ├── Analyze Code Changes                           │
-│  │       └── Generate Review Feedback                       │
-└─────────────────────────────────────────────────────────────┘
-```
 
 ### RAG-Based Review Flow
 
@@ -50,7 +27,7 @@ AI-powered Code Review Agent for GitHub Pull Requests using Azure OpenAI.
 ## Prerequisites
 
 - Python 3.11+
-- Azure OpenAI deployment (GPT-4 or GPT-4o recommended)
+- Azure OpenAI deployment (Codex model recommended, e.g. `gpt-5.2-codex`)
 - Azure AI Search service (optional, for RAG-based reviews)
 - GitHub Personal Access Token (PAT) with `repo` scope
 - Azure CLI (for authentication): `az login`
@@ -81,7 +58,7 @@ Edit `.env` with your Azure OpenAI credentials:
 ```env
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
 AZURE_OPENAI_API_KEY=your-api-key
-AZURE_OPENAI_DEPLOYMENT=gpt-4o
+AZURE_OPENAI_DEPLOYMENT=gpt-5.2-codex
 AZURE_OPENAI_API_VERSION=2025-01-01-preview
 AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-small
 
@@ -204,13 +181,13 @@ The application retrieval logic enforces:
 ### Development
 
 ```bash
-uv run uvicorn app.main:app --reload --port 8000
+uv run uvicorn app.main:app --reload --port 8001
 ```
 
 ### Production
 
 ```bash
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8001 --workers 4
 ```
 
 ## API Usage
@@ -218,7 +195,7 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 ### Review a Pull Request
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/review" \
+curl -X POST "http://localhost:8001/api/v1/review" \
   -H "Content-Type: application/json" \
   -d '{
     "pr_url": "https://github.com/owner/repo/pull/123",
@@ -258,14 +235,14 @@ curl -X POST "http://localhost:8000/api/v1/review" \
 ### Health Check
 
 ```bash
-curl http://localhost:8000/api/v1/health
+curl http://localhost:8001/api/v1/health
 ```
 
 ## API Documentation
 
 Once the server is running, visit:
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
+- **Swagger UI**: http://localhost:8001/docs
+- **ReDoc**: http://localhost:8001/redoc
 
 ## Configuration Options
 
@@ -273,7 +250,7 @@ Once the server is running, visit:
 |---------------------|-------------|---------|
 | `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint URL | Required |
 | `AZURE_OPENAI_API_KEY` | Azure OpenAI API key | Required |
-| `AZURE_OPENAI_DEPLOYMENT` | Model deployment name | `gpt-4o` |
+| `AZURE_OPENAI_DEPLOYMENT` | Model deployment name (Codex recommended) | `gpt-5.2-codex` |
 | `AZURE_OPENAI_API_VERSION` | API version | `2025-01-01-preview` |
 | `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` | Embedding deployment name | `text-embedding-3-small` |
 | `AZURE_AI_SEARCH_ENDPOINT` | Azure AI Search endpoint URL | Optional (for RAG) |
@@ -323,14 +300,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
 ```
 
 Build and run:
 
 ```bash
 docker build -t code-review-agent .
-docker run -p 8000:8000 --env-file .env code-review-agent
+docker run -p 8001:8001 --env-file .env code-review-agent
 ```
 
 ## License
